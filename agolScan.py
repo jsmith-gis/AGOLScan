@@ -1,8 +1,6 @@
 from urllib.request import urlopen, Request
-from urllib.parse import urlencode
-from urllib.parse import quote
-import json, ssl
-import datetime, sys, argparse, os
+from urllib.parse import urlencode, quote
+import datetime, sys, argparse, os, json
 from threading import Thread
 from queue import Queue
 
@@ -17,9 +15,6 @@ publicFSItems = []
 
 # Defines the entry point into the script
 def main(argv):
-    # disable ssl certificate validation
-    ssl._create_default_https_context = ssl._create_unverified_context
-
     currentDir = os.getcwd()
     orgid = ''
     parser = argparse.ArgumentParser(description='ArcGIS Online Security Scanner')
@@ -56,7 +51,6 @@ def scanItems(orgName, orgid):
     startTime = datetime.datetime.now()
     startNum = 1
     itemCnt = 0
-    skipCnt = 0
 
     # Get OrgID through portals/self call if public access is enabled
     selfUrl = 'https://' + orgName + '/sharing/rest/portals/self?f=json'
@@ -90,18 +84,15 @@ def scanItems(orgName, orgid):
         userItems = json.loads(urlopen(request).read().decode('utf-8'))
         if 'total' in userItems.keys() and userItems['total'] > 0:
             for item in userItems['results']:
-                if item['url'] != '' and item['url'].split('/')[-2] != 'MapServer':
+                if item['url'] != '' and 'FeatureServer' in item['url']:
                     try:
                         queue.put(item)
                     except:
-                        print('Invalid request' + ' - ' + item['url'])
+                        print('Invalid request - ' + item['url'])
                     itemCnt += 1
-                else:
-                    skipCnt += 1
         startNum = userItems['nextStart']
     queue.join()
-    print('Items scanned: {}'.format(itemCnt))
-    print('Items skipped: {}'.format(skipCnt))
+    print('Total open items scanned: {}'.format(itemCnt))
     print('Total open items with add, update, delete allowed: {}'.format(deleteCnt))
     print('Total open items with add and update allowed: {}'.format(addupdCnt))
     print('Total open items with add only allowed: {}'.format(addonlyCnt))
