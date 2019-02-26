@@ -1,8 +1,15 @@
-from urllib.request import urlopen, Request
-from urllib.parse import urlencode, quote
-import datetime, sys, argparse, os, json
+import sys
+if sys.version_info[0] == 2:
+    from urllib2 import Request, urlopen
+    from urllib import urlencode, quote
+    from Queue import Queue
+else:
+    from urllib.request import Request, urlopen
+    from urllib.parse import urlencode, quote
+    from queue import Queue
+    raw_input = input
+import datetime, argparse, os, json
 from threading import Thread
-from queue import Queue
 
 # Global variables
 deleteCnt = 0
@@ -31,13 +38,13 @@ def main(argv):
     if args.orgname:
         orgName = args.orgname
     else:
-        orgName = input('Enter ArcGIS.com domain name (ex sample.maps.arcgis.com): ')
+        orgName = raw_input('Enter ArcGIS.com domain name (ex sample.maps.arcgis.com): ')
 
     # Prompt for output directory if not included as an argument
     if args.outputdir:
         outputDir = args.outputdir
     else:
-        outputDir = input('Enter output directory [' + currentDir + ']: ')
+        outputDir = raw_input('Enter output directory [' + currentDir + ']: ')
         if outputDir == '':
             outputDir = currentDir
 
@@ -56,7 +63,7 @@ def scanItems(orgName, orgid):
     selfUrl = 'https://' + orgName + '/sharing/rest/portals/self?f=json'
     try:
         request = Request(selfUrl)
-        selfInfo = json.loads(urlopen(request).read().decode('utf-8'))
+        selfInfo = json.loads(bytes(urlopen(request).read()).decode('utf-8'))
         if 'access' in selfInfo.keys() and selfInfo['access'] == 'private' and orgid == '':
             print('Anonymous access is disabled for {}.'.format(orgName))
             print('Unable to retrieve organization id.')
@@ -81,7 +88,7 @@ def scanItems(orgName, orgid):
         params = {'f': 'json', 'num': '100', 'q': 'type: "Feature Service" AND access: "public" AND orgid: ' + orgid,
                   'sortField':'owner', 'start': str(startNum)}
         request = Request(getItemsUrl, urlencode(params).encode())
-        userItems = json.loads(urlopen(request).read().decode('utf-8'))
+        userItems = json.loads(bytes(urlopen(request).read()).decode('utf-8'))
         if 'total' in userItems.keys() and userItems['total'] > 0:
             for item in userItems['results']:
                 if item['url'] != '' and 'FeatureServer' in item['url']:
@@ -118,7 +125,8 @@ def checkService(i, q):
             print('Error generating url')
         try:
             request = Request(serviceUrl + '?f=json')
-            itemDetails = json.loads(urlopen(request).read().decode('utf-8'))
+            request.add_header('User-Agent', 'Mozilla/5.0')
+            itemDetails = json.loads(bytes(urlopen(request).read()).decode('utf-8'))
             if 'capabilities' in itemDetails.keys() and 'Delete' in itemDetails['capabilities']:
                 publicFSItems.append({'type':'delete', 'name': data['title'], 'url': serviceUrl})
                 deleteCnt += 1
