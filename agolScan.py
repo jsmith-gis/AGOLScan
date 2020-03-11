@@ -1,14 +1,7 @@
-import sys
-if sys.version_info[0] == 2:
-    from urllib2 import Request, urlopen
-    from urllib import urlencode, quote
-    from Queue import Queue
-else:
-    from urllib.request import Request, urlopen
-    from urllib.parse import urlencode, quote
-    from queue import Queue
-    raw_input = input
-import datetime, argparse, os, json
+from urllib.request import Request, urlopen
+from urllib.parse import urlencode, quote
+from queue import Queue
+import datetime, argparse, os, sys, json, getpass
 from threading import Thread
 
 # Global variables
@@ -19,37 +12,62 @@ updonlyCnt = 0
 updattribCnt = 0
 errorCnt = 0
 publicFSItems = []
+referer = 'AGOLScan'
 
 # Defines the entry point into the script
 def main(argv):
     currentDir = os.getcwd()
-    orgid = ''
     parser = argparse.ArgumentParser(description='ArcGIS Online Security Scanner')
-    parser.add_argument('-i', '--orgid', help='Organization ID')
     parser.add_argument('-n', '--orgname', help='Organization domain name (ex. sample.maps.arcgis.com)')
     parser.add_argument('-o', '--outputdir', help='Output directory')
+    parser.add_argument('-u', '--username', help='Username from organization - ArcGIS account only')
+    parser.add_argument('-p', '--password', help='Password')
     parser.add_argument('-?', action='help')
     args=parser.parse_args()
-
-    if args.orgid:
-        orgid = args.orgid
 
     # Prompt for ArcGIS.com fqdn if not added as an argument
     if args.orgname:
         orgName = args.orgname
     else:
-        orgName = raw_input('Enter ArcGIS.com domain name (ex sample.maps.arcgis.com): ')
+        orgName = input('Enter ArcGIS.com domain name (ex sample.maps.arcgis.com): ').strip()
 
     # Prompt for output directory if not included as an argument
     if args.outputdir:
         outputDir = args.outputdir
     else:
-        outputDir = raw_input('Enter output directory [' + currentDir + ']: ')
+        outputDir = input('Enter output directory [' + currentDir + ']: ').strip()
         if outputDir == '':
             outputDir = currentDir
 
+    orgid = getOrgid(orgName, args.username, args.password)
     scanItems(orgName, orgid)
     scanReportHTML(orgName, outputDir)
+
+def getOrgid(orgName, username, password):
+    # Get OrgID through portals/self call if public access is enabled
+    selfUrl = 'https://' + orgName + '/sharing/rest/portals/self?f=json'
+    try:
+        request = Request(selfUrl)
+        selfInfo = json.loads(urlopen(request).read().decode('utf-8'))
+        if 'id' in selfInfo.keys():
+            orgId = selfInfo['id']
+        else:
+            if not username:
+                username = input('Enter username: ').strip()
+            if not password:
+                password = getpass.getpass('Enter password: ')
+            token = generateToken('https://' + orgName + '/sharing/rest/generateToken', username, password)
+            request = Request(selfUrl)
+            request.add_header('Authorization', 'Bearer ' + token)
+            request.add_header('Referer', referer)
+            selfInfo = json.loads(urlopen(request).read().decode('utf-8'))
+            if 'id' in selfInfo.keys():
+                orgId = selfInfo['id']
+            else:
+                raise Exception('Error retrieving organization id from {}'.format(orgName))
+    except Exception as e:
+        raise Exception(e)
+    return orgId
 
 # Function to scan all items for each user
 def scanItems(orgName, orgid):
@@ -58,24 +76,6 @@ def scanItems(orgName, orgid):
     startTime = datetime.datetime.now()
     startNum = 1
     itemCnt = 0
-
-    # Get OrgID through portals/self call if public access is enabled
-    selfUrl = 'https://' + orgName + '/sharing/rest/portals/self?f=json'
-    try:
-        request = Request(selfUrl)
-        selfInfo = json.loads(bytes(urlopen(request).read()).decode('utf-8'))
-        if 'access' in selfInfo.keys() and selfInfo['access'] == 'private' and orgid == '':
-            print('Anonymous access is disabled for {}.'.format(orgName))
-            print('Unable to retrieve organization id.')
-            print('To perform the scan, please include the organization id as an input parameter when executing the script.')
-            sys.exit(0)
-        if 'id' in selfInfo.keys():
-            orgid = selfInfo['id']
-        elif orgid == '':
-            raise Exception(orgName)
-    except Exception as e:
-        print('Unable to retrieve organization information for ' + e.args[0])
-        sys.exit(1)
 
     # Setup threads to query feature services
     for i in range(num_threads):
@@ -88,7 +88,7 @@ def scanItems(orgName, orgid):
         params = {'f': 'json', 'num': '100', 'q': 'type: "Feature Service" AND access: "public" AND orgid: ' + orgid,
                   'sortField':'owner', 'start': str(startNum)}
         request = Request(getItemsUrl, urlencode(params).encode())
-        userItems = json.loads(bytes(urlopen(request).read()).decode('utf-8'))
+        userItems = json.loads(urlopen(request).read().decode('utf-8'))
         if 'total' in userItems.keys() and userItems['total'] > 0:
             for item in userItems['results']:
                 if item['url'] != '' and 'FeatureServer' in item['url']:
@@ -126,7 +126,7 @@ def checkService(i, q):
         try:
             request = Request(serviceUrl + '?f=json')
             request.add_header('User-Agent', 'Mozilla/5.0')
-            itemDetails = json.loads(bytes(urlopen(request).read()).decode('utf-8'))
+            itemDetails = json.loads(urlopen(request).read().decode('utf-8'))
             if 'capabilities' in itemDetails.keys() and 'Delete' in itemDetails['capabilities']:
                 publicFSItems.append({'type':'delete', 'name': data['title'], 'url': serviceUrl})
                 deleteCnt += 1
@@ -196,10 +196,33 @@ def scanReportHTML(orgName,outputDir):
     except:
         print('Unable to write to {}'.format(outputDir))
         print('Update permissions or specify an alternate output directory')
-        sys.exit(2)
+        raise Exception
     print('\nArgis Online Public Feature Service scan completed - {} feature services noted'.format(len(publicFSItems)))
     print('Scan results written to {}'.format(outputFile))
 
+# Function to generate token
+def generateToken(tokenUrl, username, password):
+    params = {'username': username,
+              'password': password,
+              'client': 'referer',
+              'referer': referer,
+              'expiration': '10',
+              'f': 'json'}
+    try:
+        request = Request(tokenUrl, urlencode(params).encode())
+        response = json.loads(urlopen(request).read().decode('utf-8'))
+        if 'token' in response.keys():
+            return response['token']
+        else:
+            raise Exception('{}'.format(response))
+    except Exception as e:
+        raise Exception('Unable to generate token\n{}'.format(e))
+
 # Script start
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    try:
+        main(sys.argv[1:])
+    except Exception as mainE:
+        print('Error scanning ArcGIS Online feature services')
+        print('{}'.format(mainE))
+        sys.exit(1)
